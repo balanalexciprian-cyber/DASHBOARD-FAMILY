@@ -326,6 +326,29 @@ st.markdown(
             line-height:1.05;
         }}
 
+        .bank-logo {{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            width:26px;
+            height:26px;
+            border-radius:8px;
+            margin-right:8px;
+            font-size:14px;
+            font-weight:800;
+            vertical-align:middle;
+        }}
+
+        .logo-ing {{
+            background:#ff6200;
+            color:white;
+        }}
+
+        .logo-revolut {{
+            background:#111827;
+            color:white;
+        }}
+
         div[data-testid="stMetric"] {{
             background: {bg_card};
             border: 1px solid {border};
@@ -368,6 +391,7 @@ EUR_USD_FALLBACK = 1.08
 REVOLUT_REFERENCE_DATE = date(2026, 5, 29)
 REVOLUT_START_BALANCE_RON = 22536.00
 REVOLUT_ANNUAL_RATE = 0.025
+REVOLUT_WITHHOLDING_TAX = 0.10
 ING_NL_ALEX_EUR = 3000.00
 
 ASSETS = [
@@ -444,18 +468,21 @@ ASSETS = [
         "cash_additions": [],
     },
     {
-        "name": "🇪🇺 ING NL Alex",
+        "name": "ING NL Alex",
+        "display_name": '<span class="bank-logo logo-ing">I</span>ING NL Alex',
         "mode": "savings_eur_fixed",
         "balance_eur": ING_NL_ALEX_EUR,
         "note": "Cont de economii simplu în EUR. Pentru moment este tratat ca sold fix, fără dobândă automată.",
     },
     {
-        "name": "💳 Revolut Andreea",
+        "name": "Revolut Andreea",
+        "display_name": '<span class="bank-logo logo-revolut">R</span>Revolut Andreea',
         "mode": "savings_ron_daily",
         "start_balance_ron": REVOLUT_START_BALANCE_RON,
         "reference_date": REVOLUT_REFERENCE_DATE,
         "annual_rate": REVOLUT_ANNUAL_RATE,
-        "note": "Dobânda este compusă zilnic la 2.50% pe an. Am presupus că 22,536 RON este soldul din 29.05.2026.",
+        "withholding_tax": REVOLUT_WITHHOLDING_TAX,
+        "note": "Dobânda brută este 2.50% pe an, cu impozit de 10% reținut la sursă. Soldul se compune zilnic pe baza dobânzii nete.",
     },
 ]
 
@@ -510,21 +537,31 @@ def update_best_worst(position, best_position, worst_position):
     return best_position, worst_position
 
 
-def compound_daily_balance(start_balance: float, annual_rate: float, reference_date: date):
+def compound_daily_balance_with_tax(start_balance: float, annual_rate: float, tax_rate: float, reference_date: date):
     today = date.today()
-    days_elapsed = max((today - reference_date).days, 0)
-    daily_rate = annual_rate / 365
-    current_balance = start_balance * ((1 + daily_rate) ** days_elapsed)
-    interest_earned = current_balance - start_balance
-    yield_pct = (interest_earned / start_balance * 100) if start_balance else 0
-    daily_interest_est = current_balance * daily_rate
+    days_elapsed = max((today - reference_date).days + 1, 0)
+
+    gross_daily_rate = annual_rate / 365
+    net_daily_rate = gross_daily_rate * (1 - tax_rate)
+
+    current_balance = start_balance * ((1 + net_daily_rate) ** days_elapsed)
+    net_interest_earned = current_balance - start_balance
+    net_yield_pct = (net_interest_earned / start_balance * 100) if start_balance else 0
+
+    gross_interest_today = current_balance * gross_daily_rate
+    tax_today = gross_interest_today * tax_rate
+    net_interest_today = gross_interest_today - tax_today
+
     return {
         "days_elapsed": days_elapsed,
-        "daily_rate": daily_rate,
+        "gross_daily_rate": gross_daily_rate,
+        "net_daily_rate": net_daily_rate,
         "current_balance": current_balance,
-        "interest_earned": interest_earned,
-        "yield_pct": yield_pct,
-        "daily_interest_est": daily_interest_est,
+        "net_interest_earned": net_interest_earned,
+        "net_yield_pct": net_yield_pct,
+        "gross_interest_today": gross_interest_today,
+        "tax_today": tax_today,
+        "net_interest_today": net_interest_today,
     }
 
 
@@ -540,12 +577,15 @@ best_position = None
 worst_position = None
 
 for asset in ASSETS:
+    display_name = asset.get("display_name", asset["name"])
+
     if asset["mode"] == "crypto_manual":
         current_usd = asset["total_now"]
         basis_usd = asset["total_now"]
 
         portfolio_results.append({
             "name": asset["name"],
+            "display_name": display_name,
             "mode": "crypto_manual",
             "current_usd": current_usd,
             "current_eur": current_usd / eurusd_rate,
@@ -600,6 +640,7 @@ for asset in ASSETS:
 
         portfolio_results.append({
             "name": asset["name"],
+            "display_name": display_name,
             "mode": "bvb_manual",
             "positions": positions,
             "invested_cost_basis_ron": invested_cost_basis_ron,
@@ -661,6 +702,7 @@ for asset in ASSETS:
 
         portfolio_results.append({
             "name": asset["name"],
+            "display_name": display_name,
             "mode": "manual_with_positions",
             "tickers": asset["tickers"],
             "buy_date": asset["buy_date"],
@@ -695,6 +737,7 @@ for asset in ASSETS:
 
         portfolio_results.append({
             "name": asset["name"],
+            "display_name": display_name,
             "mode": "savings_eur_fixed",
             "balance_eur": current_eur,
             "current_usd": current_usd,
@@ -711,9 +754,10 @@ for asset in ASSETS:
         continue
 
     if asset["mode"] == "savings_ron_daily":
-        revolut = compound_daily_balance(
+        revolut = compound_daily_balance_with_tax(
             asset["start_balance_ron"],
             asset["annual_rate"],
+            asset["withholding_tax"],
             asset["reference_date"],
         )
 
@@ -724,6 +768,7 @@ for asset in ASSETS:
 
         portfolio_results.append({
             "name": asset["name"],
+            "display_name": display_name,
             "mode": "savings_ron_daily",
             "start_balance_ron": asset["start_balance_ron"],
             "current_ron": current_ron,
@@ -731,11 +776,15 @@ for asset in ASSETS:
             "current_eur": current_eur,
             "basis_usd": basis_usd,
             "days_elapsed": revolut["days_elapsed"],
-            "daily_rate": revolut["daily_rate"],
+            "gross_daily_rate": revolut["gross_daily_rate"],
+            "net_daily_rate": revolut["net_daily_rate"],
             "annual_rate": asset["annual_rate"],
-            "interest_earned_ron": revolut["interest_earned"],
-            "yield_pct": revolut["yield_pct"],
-            "daily_interest_est_ron": revolut["daily_interest_est"],
+            "withholding_tax": asset["withholding_tax"],
+            "net_interest_earned_ron": revolut["net_interest_earned"],
+            "net_yield_pct": revolut["net_yield_pct"],
+            "gross_interest_today": revolut["gross_interest_today"],
+            "tax_today": revolut["tax_today"],
+            "net_interest_today": revolut["net_interest_today"],
             "reference_date": asset["reference_date"],
             "note": asset["note"],
         })
@@ -781,6 +830,7 @@ for asset in ASSETS:
 
     portfolio_results.append({
         "name": asset["name"],
+        "display_name": display_name,
         "mode": "calculated",
         "tickers": asset["tickers"],
         "buy_date": asset["buy_date"],
@@ -881,6 +931,8 @@ with left:
     st.markdown('<div class="section-subtitle">Ordine: Crypto, BVB, PIE OT, PIE 20, AI TECH, ING NL Alex, Revolut Andreea</div>', unsafe_allow_html=True)
 
     for result in portfolio_results:
+        display_name = result.get("display_name", result["name"])
+
         if result["mode"] == "crypto_manual":
             row_pct = result["today_pnl_pct"]
             row_label = f"Today {row_pct:+.2f}%"
@@ -898,9 +950,9 @@ with left:
             row_label = f"Fixed {row_pct:+.2f}%"
             sub_line = f"€{result['balance_eur']:,.2f} | ~${result['current_usd']:,.2f} | ~{result['current_ron']:,.2f} RON"
         elif result["mode"] == "savings_ron_daily":
-            row_pct = result["yield_pct"]
-            row_label = f"Yield {row_pct:+.2f}%"
-            sub_line = f"{result['current_ron']:,.2f} RON | ~${result['current_usd']:,.2f} | ~€{result['current_eur']:,.2f}"
+            row_pct = result["net_yield_pct"]
+            row_label = f"Net {row_pct:+.2f}%"
+            sub_line = f"{result['current_ron']:,.2f} RON | azi net: {result['net_interest_today']:.2f} RON | ~${result['current_usd']:,.2f}"
         else:
             row_pct = result["change_pct"]
             row_label = f"{row_pct:+.2f}%"
@@ -914,7 +966,7 @@ with left:
             <div class="bucket-card">
                 <div class="bucket-line">
                     <div>
-                        <div class="asset-name">{result['name']}</div>
+                        <div class="asset-name">{display_name}</div>
                         <div class="bucket-kicker">{sub_line}</div>
                     </div>
                     <div>
@@ -930,6 +982,8 @@ with left:
     st.markdown("</div>", unsafe_allow_html=True)
 
     for result in portfolio_results:
+        display_name = result.get("display_name", result["name"])
+
         if result["mode"] == "crypto_manual":
             expander_suffix = f"Today {result['today_pnl_pct']:+.2f}%"
         elif result["mode"] == "bvb_manual":
@@ -939,7 +993,7 @@ with left:
         elif result["mode"] == "savings_eur_fixed":
             expander_suffix = f"€{result['balance_eur']:,.2f}"
         elif result["mode"] == "savings_ron_daily":
-            expander_suffix = f"Yield {result['yield_pct']:+.2f}%"
+            expander_suffix = f"Net {result['net_yield_pct']:+.2f}%"
         else:
             expander_suffix = f"{result['change_pct']:+.2f}%"
 
@@ -1082,6 +1136,7 @@ with left:
                 st.markdown(
                     f"""
                     <div class="notice-box">
+                        <b>Cont:</b> {display_name}<br>
                         <b>Sold EUR:</b> €{result['balance_eur']:.2f}<br>
                         <b>Estimare USD:</b> ${result['current_usd']:.2f}<br>
                         <b>Estimare RON:</b> {result['current_ron']:.2f} RON<br>
@@ -1097,13 +1152,17 @@ with left:
                 st.markdown(
                     f"""
                     <div class="notice-box">
+                        <b>Cont:</b> {display_name}<br>
                         <b>Sold inițial:</b> {result['start_balance_ron']:.2f} RON<br>
                         <b>Sold curent:</b> {result['current_ron']:.2f} RON<br>
-                        <b>Dobândă acumulată:</b> {result['interest_earned_ron']:.2f} RON<br>
-                        <b>Randament:</b> {result['yield_pct']:+.4f}%<br>
-                        <b>Dobândă anuală:</b> {result['annual_rate'] * 100:.2f}%<br>
-                        <b>Dobândă zilnică estimată azi:</b> {result['daily_interest_est_ron']:.4f} RON<br>
-                        <b>Zile trecute:</b> {result['days_elapsed']}<br>
+                        <b>Dobândă brută estimată azi:</b> {result['gross_interest_today']:.2f} RON<br>
+                        <b>Impozit reținut azi:</b> {result['tax_today']:.2f} RON<br>
+                        <b>Dobândă netă estimată azi:</b> {result['net_interest_today']:.2f} RON<br>
+                        <b>Dobândă netă acumulată:</b> {result['net_interest_earned_ron']:.2f} RON<br>
+                        <b>Randament net:</b> {result['net_yield_pct']:+.4f}%<br>
+                        <b>Dobândă anuală brută:</b> {result['annual_rate'] * 100:.2f}%<br>
+                        <b>Impozit la sursă:</b> {result['withholding_tax'] * 100:.0f}%<br>
+                        <b>Zile compuse:</b> {result['days_elapsed']}<br>
                         <b>Estimare USD:</b> ${result['current_usd']:.2f}<br>
                         <b>Estimare EUR:</b> €{result['current_eur']:.2f}<br><br>
                         {result['note']}
@@ -1243,4 +1302,4 @@ with right:
             unsafe_allow_html=True,
         )
 
-st.caption("Date de la Yahoo Finance • Total Assets este afișat în USD, EUR și RON • BVB este convertit estimativ din RON • Crypto rămâne manual până adaugi Binance API • Revolut Andreea compune zilnic dobânda de 2.50%/an")
+st.caption("Date de la Yahoo Finance • Total Assets este afișat în USD, EUR și RON • BVB este convertit estimativ din RON • Crypto rămâne manual până adaugi Binance API • Revolut Andreea compune zilnic dobânda netă după 10% impozit")
