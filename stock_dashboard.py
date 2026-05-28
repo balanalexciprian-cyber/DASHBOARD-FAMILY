@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 from datetime import date
 
-st.set_page_config(page_title="Portfolio Tracker", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Family Assets Dashboard", layout="wide", page_icon="📈")
 
 theme_mode = st.sidebar.selectbox("Temă", ["Light", "Dark"], index=0)
 
@@ -79,7 +79,7 @@ st.markdown(
         .hero-subtitle {{
             color: {text_soft};
             font-size: 0.98rem;
-            max-width: 780px;
+            max-width: 860px;
         }}
 
         .summary-card {{
@@ -139,12 +139,19 @@ st.markdown(
             margin-bottom: 14px;
         }}
 
-        .asset-row {{
+        .bucket-card {{
             background: {bg_card};
             border: 1px solid {border};
             border-radius: 18px;
             padding: 14px 16px;
             margin-bottom: 10px;
+        }}
+
+        .bucket-line {{
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-start;
+            gap:12px;
         }}
 
         .asset-name {{
@@ -153,10 +160,17 @@ st.markdown(
             font-weight: 700;
         }}
 
-        .asset-sub {{
-            color: {text_soft};
-            font-size: 0.82rem;
-            margin-top: 2px;
+        .bucket-kicker {{
+            color:{text_soft};
+            font-size:12px;
+            margin-top:4px;
+        }}
+
+        .bucket-value {{
+            color:{text_main};
+            font-size:1.05rem;
+            font-weight:800;
+            text-align:right;
         }}
 
         .pill-pos {{
@@ -297,34 +311,6 @@ st.markdown(
             border: 1px solid rgba(34,197,94,0.20);
         }}
 
-        .bucket-card {{
-            background: {bg_card};
-            border: 1px solid {border};
-            border-radius: 18px;
-            padding: 14px 16px;
-            margin-bottom: 10px;
-        }}
-
-        .bucket-line {{
-            display:flex;
-            justify-content:space-between;
-            align-items:flex-start;
-            gap:12px;
-        }}
-
-        .bucket-kicker {{
-            color:{text_soft};
-            font-size:12px;
-            margin-top:4px;
-        }}
-
-        .bucket-value {{
-            color:{text_main};
-            font-size:1.05rem;
-            font-weight:800;
-            text-align:right;
-        }}
-
         .exchange-box {{
             background: linear-gradient(135deg, {bg_card} 0%, {bg_subtle} 100%);
             border: 1px solid {border};
@@ -378,6 +364,11 @@ st.markdown(
 )
 
 USD_RON_FALLBACK = 4.45
+EUR_USD_FALLBACK = 1.08
+REVOLUT_REFERENCE_DATE = date(2026, 5, 29)
+REVOLUT_START_BALANCE_RON = 22536.00
+REVOLUT_ANNUAL_RATE = 0.025
+ING_NL_ALEX_EUR = 3000.00
 
 ASSETS = [
     {
@@ -396,7 +387,7 @@ ASSETS = [
             {"symbol": "EDG", "name": "Edgeware", "amount": "218.69791733", "value": 0.00},
             {"symbol": "ETHW", "name": "Ethereum PoW", "amount": "0.00008495", "value": 0.00},
         ],
-        "note": "Pentru crypto folosim valoarea curentă și Today's PnL din exchange. Cost basis complet nu este disponibil aici, deci totalul este tratat la valoarea actuală.",
+        "note": "Crypto rămâne manual până adaugi Binance API. Totalul și Today's PnL sunt cele din exchange.",
     },
     {
         "name": "🇷🇴 BVB Principal",
@@ -422,7 +413,7 @@ ASSETS = [
                 "return_pct": 2.60,
             },
         ],
-        "note": "BVB folosește valorile manuale din broker. Conversia în USD este estimată pe baza cursului USD/RON.",
+        "note": "BVB folosește valorile manuale din broker. Conversia în USD și EUR este estimată pe baza cursurilor live.",
     },
     {
         "name": "💰 PIE OT Investimental",
@@ -434,7 +425,7 @@ ASSETS = [
         "invested_now": 480.84,
         "cash_now": 141.98,
         "total_now": 622.82,
-        "note": "PIE OT folosește valori manuale reale pentru totaluri. Randamentul pe tickere este calculat pe partea investită inițial, iar cash-ul rămâne separat.",
+        "note": "PIE OT folosește totaluri manuale reale. Randamentul pe tickere este calculat pe partea investită inițial, iar cash-ul rămâne separat.",
     },
     {
         "name": "📈 Alex PIE 20",
@@ -451,6 +442,20 @@ ASSETS = [
         "buy_date": date(2026, 5, 26),
         "amount_per_stock": 78.44,
         "cash_additions": [],
+    },
+    {
+        "name": "🇪🇺 ING NL Alex",
+        "mode": "savings_eur_fixed",
+        "balance_eur": ING_NL_ALEX_EUR,
+        "note": "Cont de economii simplu în EUR. Pentru moment este tratat ca sold fix, fără dobândă automată.",
+    },
+    {
+        "name": "💳 Revolut Andreea",
+        "mode": "savings_ron_daily",
+        "start_balance_ron": REVOLUT_START_BALANCE_RON,
+        "reference_date": REVOLUT_REFERENCE_DATE,
+        "annual_rate": REVOLUT_ANNUAL_RATE,
+        "note": "Dobânda este compusă zilnic la 2.50% pe an. Am presupus că 22,536 RON este soldul din 29.05.2026.",
     },
 ]
 
@@ -487,26 +492,14 @@ def get_ticker_data(ticker: str, buy_date: date):
         return None, str(e)
 
 
-def get_usdron_rate():
+def get_fx_rate(ticker: str, fallback: float):
     try:
-        direct = yf.Ticker("USDRON=X").history(period="10d", auto_adjust=False)
-        if not direct.empty:
-            price = float(direct["Close"].dropna().iloc[-1])
-            if price > 0:
-                return price
+        hist = yf.Ticker(ticker).history(period="10d", auto_adjust=False)
+        if not hist.empty:
+            return float(hist["Close"].dropna().iloc[-1])
     except Exception:
         pass
-
-    try:
-        inverse = yf.Ticker("RON=X").history(period="10d", auto_adjust=False)
-        if not inverse.empty:
-            price = float(inverse["Close"].dropna().iloc[-1])
-            if price > 0:
-                return 1 / price
-    except Exception:
-        pass
-
-    return USD_RON_FALLBACK
+    return fallback
 
 
 def update_best_worst(position, best_position, worst_position):
@@ -517,13 +510,32 @@ def update_best_worst(position, best_position, worst_position):
     return best_position, worst_position
 
 
-usdron_rate = get_usdron_rate()
+def compound_daily_balance(start_balance: float, annual_rate: float, reference_date: date):
+    today = date.today()
+    days_elapsed = max((today - reference_date).days, 0)
+    daily_rate = annual_rate / 365
+    current_balance = start_balance * ((1 + daily_rate) ** days_elapsed)
+    interest_earned = current_balance - start_balance
+    yield_pct = (interest_earned / start_balance * 100) if start_balance else 0
+    daily_interest_est = current_balance * daily_rate
+    return {
+        "days_elapsed": days_elapsed,
+        "daily_rate": daily_rate,
+        "current_balance": current_balance,
+        "interest_earned": interest_earned,
+        "yield_pct": yield_pct,
+        "daily_interest_est": daily_interest_est,
+    }
+
+
+usdron_rate = get_fx_rate("USDRON=X", USD_RON_FALLBACK)
+eurusd_rate = get_fx_rate("EURUSD=X", EUR_USD_FALLBACK)
+eurron_rate = eurusd_rate * usdron_rate
 
 portfolio_totals = []
 portfolio_results = []
 global_total_now_usd = 0.0
 global_total_in_usd = 0.0
-total_cash_usd = 0.0
 best_position = None
 worst_position = None
 
@@ -536,6 +548,8 @@ for asset in ASSETS:
             "name": asset["name"],
             "mode": "crypto_manual",
             "current_usd": current_usd,
+            "current_eur": current_usd / eurusd_rate,
+            "current_ron": current_usd * usdron_rate,
             "basis_usd": basis_usd,
             "today_pnl": asset["today_pnl"],
             "today_pnl_pct": asset["today_pnl_pct"],
@@ -577,13 +591,12 @@ for asset in ASSETS:
         cash_ron = asset["cash_ron"]
         total_ron = invested_now_ron + cash_ron
         basis_ron = invested_cost_basis_ron + cash_ron
-
         invested_change_pct = ((invested_now_ron - invested_cost_basis_ron) / invested_cost_basis_ron * 100) if invested_cost_basis_ron else 0
         total_change_pct = ((total_ron - basis_ron) / basis_ron * 100) if basis_ron else 0
 
         current_usd = total_ron / usdron_rate
         basis_usd = basis_ron / usdron_rate
-        cash_usd = cash_ron / usdron_rate
+        current_eur = total_ron / eurron_rate
 
         portfolio_results.append({
             "name": asset["name"],
@@ -596,16 +609,17 @@ for asset in ASSETS:
             "invested_change_pct": invested_change_pct,
             "total_change_pct": total_change_pct,
             "usdron_rate": usdron_rate,
+            "eurron_rate": eurron_rate,
             "current_usd": current_usd,
+            "current_eur": current_eur,
+            "current_ron": total_ron,
             "basis_usd": basis_usd,
-            "cash_usd": cash_usd,
             "note": asset["note"],
         })
 
         portfolio_totals.append({"Categorie": asset["name"], "Valoare": current_usd})
         global_total_now_usd += current_usd
         global_total_in_usd += basis_usd
-        total_cash_usd += cash_usd
         continue
 
     if asset["mode"] == "manual_with_positions":
@@ -614,7 +628,6 @@ for asset in ASSETS:
         cash_total = asset["cash_now"]
         total_now = asset["total_now"]
         basis_usd = invested_cost_basis + cash_total
-
         invested_change_pct = ((invested_now - invested_cost_basis) / invested_cost_basis * 100) if invested_cost_basis else 0
         total_change_pct = ((total_now - basis_usd) / basis_usd * 100) if basis_usd else 0
 
@@ -664,13 +677,72 @@ for asset in ASSETS:
             "total_positions_value": total_positions_value,
             "ticker_count": len(asset["tickers"]),
             "current_usd": total_now,
+            "current_eur": total_now / eurusd_rate,
+            "current_ron": total_now * usdron_rate,
             "basis_usd": basis_usd,
         })
 
         portfolio_totals.append({"Categorie": asset["name"], "Valoare": total_now})
         global_total_now_usd += total_now
         global_total_in_usd += basis_usd
-        total_cash_usd += cash_total
+        continue
+
+    if asset["mode"] == "savings_eur_fixed":
+        current_eur = asset["balance_eur"]
+        current_usd = current_eur * eurusd_rate
+        current_ron = current_eur * eurron_rate
+        basis_usd = current_usd
+
+        portfolio_results.append({
+            "name": asset["name"],
+            "mode": "savings_eur_fixed",
+            "balance_eur": current_eur,
+            "current_usd": current_usd,
+            "current_eur": current_eur,
+            "current_ron": current_ron,
+            "basis_usd": basis_usd,
+            "change_pct": 0.0,
+            "note": asset["note"],
+        })
+
+        portfolio_totals.append({"Categorie": asset["name"], "Valoare": current_usd})
+        global_total_now_usd += current_usd
+        global_total_in_usd += basis_usd
+        continue
+
+    if asset["mode"] == "savings_ron_daily":
+        revolut = compound_daily_balance(
+            asset["start_balance_ron"],
+            asset["annual_rate"],
+            asset["reference_date"],
+        )
+
+        current_ron = revolut["current_balance"]
+        current_usd = current_ron / usdron_rate
+        current_eur = current_ron / eurron_rate
+        basis_usd = asset["start_balance_ron"] / usdron_rate
+
+        portfolio_results.append({
+            "name": asset["name"],
+            "mode": "savings_ron_daily",
+            "start_balance_ron": asset["start_balance_ron"],
+            "current_ron": current_ron,
+            "current_usd": current_usd,
+            "current_eur": current_eur,
+            "basis_usd": basis_usd,
+            "days_elapsed": revolut["days_elapsed"],
+            "daily_rate": revolut["daily_rate"],
+            "annual_rate": asset["annual_rate"],
+            "interest_earned_ron": revolut["interest_earned"],
+            "yield_pct": revolut["yield_pct"],
+            "daily_interest_est_ron": revolut["daily_interest_est"],
+            "reference_date": asset["reference_date"],
+            "note": asset["note"],
+        })
+
+        portfolio_totals.append({"Categorie": asset["name"], "Valoare": current_usd})
+        global_total_now_usd += current_usd
+        global_total_in_usd += basis_usd
         continue
 
     positions = []
@@ -718,6 +790,8 @@ for asset in ASSETS:
         "invested_total": invested_total,
         "total_positions_value": total_positions_value,
         "current_usd": current_usd,
+        "current_eur": current_usd / eurusd_rate,
+        "current_ron": current_usd * usdron_rate,
         "basis_usd": basis_usd,
         "change_pct": change_pct,
         "ticker_count": len(asset["tickers"]),
@@ -726,18 +800,21 @@ for asset in ASSETS:
     portfolio_totals.append({"Categorie": asset["name"], "Valoare": current_usd})
     global_total_now_usd += current_usd
     global_total_in_usd += basis_usd
-    total_cash_usd += cash_total
 
+global_total_now_eur = global_total_now_usd / eurusd_rate
+global_total_now_ron = global_total_now_usd * usdron_rate
+global_total_in_eur = global_total_in_usd / eurusd_rate
+global_total_in_ron = global_total_in_usd * usdron_rate
 global_profit_usd = global_total_now_usd - global_total_in_usd
 global_profit_pct = (global_profit_usd / global_total_in_usd * 100) if global_total_in_usd else 0
 
 st.markdown(
     """
     <div class="hero">
-        <div class="hero-kicker">Dashboard</div>
+        <div class="hero-kicker">Family Dashboard</div>
         <div class="hero-title">My Assets</div>
         <div class="hero-subtitle">
-            O vedere mai curată asupra portofoliului tău: valoare totală în USD, cash, alocare pe crypto, BVB și PIE-uri, plus performanță pe fiecare poziție.
+            Dashboard extins cu crypto, BVB, PIE-uri și economii de familie. Totalul este afișat în USD, EUR și RON.
         </div>
     </div>
     """,
@@ -767,9 +844,9 @@ with left:
         st.markdown(
             f"""
             <div class="summary-card">
-                <div class="summary-label">Capital introdus (USD)</div>
-                <div class="summary-value">${global_total_in_usd:,.2f}</div>
-                <div class="summary-label">BVB convertit estimativ • Crypto la valoarea actuală</div>
+                <div class="summary-label">Total Assets (EUR)</div>
+                <div class="summary-value">€{global_total_now_eur:,.2f}</div>
+                <div class="summary-label">Capital introdus: €{global_total_in_eur:,.2f}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -779,30 +856,29 @@ with left:
         st.markdown(
             f"""
             <div class="summary-card">
-                <div class="summary-label">Cash total (USD est.)</div>
-                <div class="summary-value">${total_cash_usd:,.2f}</div>
-                <div class="summary-label">PIE OT cash + BVB cash convertit</div>
+                <div class="summary-label">Total Assets (RON)</div>
+                <div class="summary-value">{global_total_now_ron:,.2f} RON</div>
+                <div class="summary-label">Capital introdus: {global_total_in_ron:,.2f} RON</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
     with s4:
-        best_text = "N/A" if best_position is None else f"{best_position['ticker']} {best_position['return_pct']:.2f}%"
         st.markdown(
             f"""
             <div class="summary-card">
-                <div class="summary-label">Best Performer</div>
-                <div class="summary-value" style="font-size:1.16rem;">{best_text}</div>
-                <div class="summary-label">Top poziție dintre assets trackable</div>
+                <div class="summary-label">Capital introdus (USD)</div>
+                <div class="summary-value">${global_total_in_usd:,.2f}</div>
+                <div class="summary-label">Include BVB convertit și economiile</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">Portfolio Buckets</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-subtitle">Ordine: Crypto, BVB, PIE OT, PIE 20, AI TECH</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Family Buckets</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-subtitle">Ordine: Crypto, BVB, PIE OT, PIE 20, AI TECH, ING NL Alex, Revolut Andreea</div>', unsafe_allow_html=True)
 
     for result in portfolio_results:
         if result["mode"] == "crypto_manual":
@@ -812,11 +888,19 @@ with left:
         elif result["mode"] == "bvb_manual":
             row_pct = result["invested_change_pct"]
             row_label = f"Invested {row_pct:+.2f}%"
-            sub_line = f"RON total: {result['total_ron']:,.2f} | Est. USD: ${result['current_usd']:,.2f}"
+            sub_line = f"{result['total_ron']:,.2f} RON | ~${result['current_usd']:,.2f} | ~€{result['current_eur']:,.2f}"
         elif result["mode"] == "manual_with_positions":
             row_pct = result["invested_change_pct"]
             row_label = f"Invested {row_pct:+.2f}%"
             sub_line = f"Invested now: ${result['invested_now']:,.2f} | Cash: ${result['cash_total']:,.2f}"
+        elif result["mode"] == "savings_eur_fixed":
+            row_pct = result["change_pct"]
+            row_label = f"Fixed {row_pct:+.2f}%"
+            sub_line = f"€{result['balance_eur']:,.2f} | ~${result['current_usd']:,.2f} | ~{result['current_ron']:,.2f} RON"
+        elif result["mode"] == "savings_ron_daily":
+            row_pct = result["yield_pct"]
+            row_label = f"Yield {row_pct:+.2f}%"
+            sub_line = f"{result['current_ron']:,.2f} RON | ~${result['current_usd']:,.2f} | ~€{result['current_eur']:,.2f}"
         else:
             row_pct = result["change_pct"]
             row_label = f"{row_pct:+.2f}%"
@@ -852,6 +936,10 @@ with left:
             expander_suffix = f"Invested {result['invested_change_pct']:+.2f}%"
         elif result["mode"] == "manual_with_positions":
             expander_suffix = f"Invested {result['invested_change_pct']:+.2f}%"
+        elif result["mode"] == "savings_eur_fixed":
+            expander_suffix = f"€{result['balance_eur']:,.2f}"
+        elif result["mode"] == "savings_ron_daily":
+            expander_suffix = f"Yield {result['yield_pct']:+.2f}%"
         else:
             expander_suffix = f"{result['change_pct']:+.2f}%"
 
@@ -915,14 +1003,15 @@ with left:
                         <b>Cash:</b> {result['cash_ron']:.2f} RON<br>
                         <b>Valoare totală:</b> {result['total_ron']:.2f} RON<br>
                         <b>Estimare USD:</b> ${result['current_usd']:.2f}<br>
-                        <b>Curs estimat USD/RON:</b> {result['usdron_rate']:.4f}<br><br>
+                        <b>Estimare EUR:</b> €{result['current_eur']:.2f}<br>
+                        <b>Curs USD/RON:</b> {result['usdron_rate']:.4f}<br><br>
                         {result['note']}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                for i, pos in enumerate(result["positions"]):
+                for pos in result["positions"]:
                     badge_row = (
                         f'<span class="bvb-badge bvb-ron">{pos["market_value_ron"]:.2f} RON</span>'
                         f'<span class="bvb-badge bvb-usd">${pos["market_value_ron"] / result["usdron_rate"]:.2f}</span>'
@@ -989,6 +1078,41 @@ with left:
                         st.write(f"- {item}")
                 continue
 
+            if result["mode"] == "savings_eur_fixed":
+                st.markdown(
+                    f"""
+                    <div class="notice-box">
+                        <b>Sold EUR:</b> €{result['balance_eur']:.2f}<br>
+                        <b>Estimare USD:</b> ${result['current_usd']:.2f}<br>
+                        <b>Estimare RON:</b> {result['current_ron']:.2f} RON<br>
+                        <b>Curs EUR/USD:</b> {eurusd_rate:.4f}<br><br>
+                        {result['note']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                continue
+
+            if result["mode"] == "savings_ron_daily":
+                st.markdown(
+                    f"""
+                    <div class="notice-box">
+                        <b>Sold inițial:</b> {result['start_balance_ron']:.2f} RON<br>
+                        <b>Sold curent:</b> {result['current_ron']:.2f} RON<br>
+                        <b>Dobândă acumulată:</b> {result['interest_earned_ron']:.2f} RON<br>
+                        <b>Randament:</b> {result['yield_pct']:+.4f}%<br>
+                        <b>Dobândă anuală:</b> {result['annual_rate'] * 100:.2f}%<br>
+                        <b>Dobândă zilnică estimată azi:</b> {result['daily_interest_est_ron']:.4f} RON<br>
+                        <b>Zile trecute:</b> {result['days_elapsed']}<br>
+                        <b>Estimare USD:</b> ${result['current_usd']:.2f}<br>
+                        <b>Estimare EUR:</b> €{result['current_eur']:.2f}<br><br>
+                        {result['note']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                continue
+
             st.caption(f"Data intrării: {result['buy_date']:%d.%m.%Y}")
 
             cols = st.columns(4)
@@ -1018,7 +1142,7 @@ with right:
     st.markdown('<div class="sidebar-card"><div class="sidebar-title">Allocation (USD)</div>', unsafe_allow_html=True)
 
     total_value = sum(x["Valoare"] for x in portfolio_totals)
-    colors = [green, blue, orange, "#94a3b8", red, "#8b5cf6", "#06b6d4"]
+    colors = [green, blue, orange, "#94a3b8", red, "#8b5cf6", "#06b6d4", "#f97316"]
 
     current_angle = 0
     segments = []
@@ -1085,8 +1209,9 @@ with right:
         f"""
         <div class="sidebar-card">
             <div class="sidebar-title">FX Estimate</div>
-            <div style="color:{text_main}; font-size:1.1rem; font-weight:800;">1 USD = {usdron_rate:.4f} RON</div>
-            <div style="color:{text_soft}; font-size:0.84rem; margin-top:4px;">Folosit pentru conversia BVB în USD</div>
+            <div style="color:{text_main}; font-size:1rem; font-weight:800;">1 USD = {usdron_rate:.4f} RON</div>
+            <div style="color:{text_main}; font-size:1rem; font-weight:800; margin-top:6px;">1 EUR = {eurron_rate:.4f} RON</div>
+            <div style="color:{text_soft}; font-size:0.84rem; margin-top:6px;">Conversii folosite pentru BVB și economii</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1118,4 +1243,4 @@ with right:
             unsafe_allow_html=True,
         )
 
-st.caption("Date de la Yahoo Finance • Tema implicită este Light • Total Assets este în USD • BVB este convertit estimativ din RON • Crypto folosește valorile manuale din exchange • PIE OT separă investiția de cash")
+st.caption("Date de la Yahoo Finance • Total Assets este afișat în USD, EUR și RON • BVB este convertit estimativ din RON • Crypto rămâne manual până adaugi Binance API • Revolut Andreea compune zilnic dobânda de 2.50%/an")
