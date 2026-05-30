@@ -253,6 +253,17 @@ st.markdown(
             line-height: 1.7;
         }}
 
+        .warning-box {{
+            background: rgba(245, 158, 11, 0.12);
+            border: 1px solid rgba(245, 158, 11, 0.35);
+            border-radius: 18px;
+            padding: 14px 16px;
+            color: {text_main};
+            font-size: 0.92rem;
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }}
+
         .crypto-card {{
             background: {bg_card};
             border: 1px solid {border};
@@ -584,7 +595,13 @@ def get_binance_crypto_snapshot():
             "source": "Binance API",
         }, None
     except Exception as exc:
-        return None, str(exc)
+        error_message = str(exc)
+        if "HTTP Error 451" in error_message:
+            error_message = (
+                "HTTP 451: Binance API este blocat din reteaua sau regiunea curenta. "
+                "Soldurile crypto raman pe fallback manual."
+            )
+        return None, error_message
 
 
 def get_live_ecb_fx():
@@ -1167,17 +1184,27 @@ def render_crypto_detail(result):
     )
 
     if result.get("api_error") and result.get("source") == "Manual fallback":
-        st.warning(f"Binance API indisponibil, s-a folosit fallback manual: {result['api_error']}")
+        st.markdown(
+            f"""
+            <div class="warning-box">
+                <b>Binance API indisponibil.</b><br>
+                {result['api_error']}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     for i in range(0, len(result["positions"]), 2):
         cols = st.columns(2)
         for j, coin in enumerate(result["positions"][i:i + 2]):
             with cols[j]:
-                pricing_line = ""
+                pricing_text = ""
                 if coin.get("pricing_status") == "unpriced":
-                    pricing_line = '<div class="crypto-value">Fără pereche de preț detectată în Binance</div>'
+                    pricing_text = "Fara pereche de pret detectata in Binance"
                 elif "today_pnl_pct" in coin:
-                    pricing_line = f'<div class="crypto-value">{coin["today_pnl_pct"]:+.2f}% today</div>'
+                    pricing_text = f"{coin['today_pnl_pct']:+.2f}% today"
+
+                pricing_html = f'<div class="crypto-value">{pricing_text}</div>' if pricing_text else ""
 
                 st.markdown(
                     f"""
@@ -1190,7 +1217,7 @@ def render_crypto_detail(result):
                             <div>
                                 <div class="crypto-amount">{coin['amount']}</div>
                                 <div class="crypto-value">${coin['value']:.2f}</div>
-                                {pricing_line}
+                                {pricing_html}
                             </div>
                         </div>
                     </div>
