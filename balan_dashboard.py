@@ -2,12 +2,7 @@ import streamlit as st
 import yfinance as yf
 from datetime import date
 import xml.etree.ElementTree as ET
-import json
-import time
-import hmac
-import hashlib
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 
 st.set_page_config(page_title="Family Assets Dashboard", layout="wide", page_icon="📈")
 
@@ -403,8 +398,15 @@ st.markdown(
 ECB_XML_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 USD_RON_FALLBACK = 4.45
 EUR_USD_FALLBACK = 1.08
-BINANCE_BASE_URL = "https://api.binance.com"
-BINANCE_STABLE_ASSETS = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "USDS", "DAI", "USD"}
+
+CRYPTO_PUBLIC_SYMBOLS = {
+    "BNB": "BNB-USD",
+    "BTC": "BTC-USD",
+    "XLM": "XLM-USD",
+    "EGLD": "EGLD-USD",
+    "ETHW": "ETHW-USD",
+}
+CRYPTO_STABLE_ASSETS = {"USD", "USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "USDS", "DAI"}
 
 REVOLUT_REFERENCE_DATE = date(2026, 5, 29)
 REVOLUT_START_BALANCE_RON = 22536.00
@@ -413,195 +415,11 @@ REVOLUT_WITHHOLDING_TAX = 0.10
 ING_NL_ALEX_EUR = 3000.00
 
 
-def http_get_json(url: str, headers=None):
-    request = Request(url, headers=headers or {"User-Agent": "Mozilla/5.0"})
-    with urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def has_binance_secrets():
-    return "BINANCE_API_KEY" in st.secrets and "BINANCE_API_SECRET" in st.secrets
-
-
-def binance_public_get(path: str, params=None):
-    query = f"?{urlencode(params)}" if params else ""
-    return http_get_json(f"{BINANCE_BASE_URL}{path}{query}")
-
-
-def binance_signed_get(path: str, params=None):
-    api_key = st.secrets["BINANCE_API_KEY"]
-    api_secret = st.secrets["BINANCE_API_SECRET"]
-
-    request_params = dict(params or {})
-    request_params["timestamp"] = int(time.time() * 1000)
-    request_params["recvWindow"] = 5000
-
-    query = urlencode(request_params)
-    signature = hmac.new(
-        api_secret.encode("utf-8"),
-        query.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-    return http_get_json(
-        f"{BINANCE_BASE_URL}{path}?{query}&signature={signature}",
-        headers={"X-MBX-APIKEY": api_key, "User-Agent": "Mozilla/5.0"},
-    )
-
-
 def safe_float(value, default=0.0):
     try:
         return float(value)
     except Exception:
         return default
-
-
-def build_binance_symbol_candidates(asset_code: str):
-    candidates = []
-
-    if asset_code not in BINANCE_STABLE_ASSETS:
-        candidates.append((f"{asset_code}USDT", 1.0))
-        candidates.append((f"{asset_code}BTC", "BTCUSDT"))
-        candidates.append((f"{asset_code}ETH", "ETHUSDT"))
-        candidates.append((f"{asset_code}BNB", "BNBUSDT"))
-
-    return candidates
-
-
-def resolve_binance_asset_prices(asset_code: str, last_prices, open_prices):
-    if asset_code in BINANCE_STABLE_ASSETS:
-        return 1.0, 1.0
-
-    for base_symbol, quote_symbol in build_binance_symbol_candidates(asset_code):
-        if isinstance(quote_symbol, float):
-            if base_symbol in last_prices and base_symbol in open_prices:
-                return last_prices[base_symbol], open_prices[base_symbol]
-            continue
-
-        if (
-            base_symbol in last_prices and base_symbol in open_prices
-            and quote_symbol in last_prices and quote_symbol in open_prices
-        ):
-            return (
-                last_prices[base_symbol] * last_prices[quote_symbol],
-                open_prices[base_symbol] * open_prices[quote_symbol],
-            )
-
-    return None, None
-
-
-def get_binance_crypto_snapshot():
-    if not has_binance_secrets():
-        return None, "fallback"
-
-    try:
-        account = binance_signed_get("/api/v3/account", {"omitZeroBalances": "true"})
-
-        assets = []
-        symbols_needed = set()
-
-        for balance in account.get("balances", []):
-            asset_code = balance.get("asset", "")
-            free_qty = safe_float(balance.get("free"))
-            locked_qty = safe_float(balance.get("locked"))
-            quantity = free_qty + locked_qty
-
-            if quantity <= 0:
-                continue
-
-            assets.append({
-                "asset": asset_code,
-                "quantity": quantity,
-            })
-
-            for base_symbol, quote_symbol in build_binance_symbol_candidates(asset_code):
-                symbols_needed.add(base_symbol)
-                if isinstance(quote_symbol, str):
-                    symbols_needed.add(quote_symbol)
-
-        if not assets:
-            return {
-                "positions": [],
-                "total_now": 0.0,
-                "today_pnl": 0.0,
-                "today_pnl_pct": 0.0,
-                "source": "Binance API",
-            }, None
-
-        market_params = {"symbols": json.dumps(sorted(symbols_needed))}
-        prices = binance_public_get("/api/v3/ticker/price", market_params)
-        ticker_24h = binance_public_get("/api/v3/ticker/24hr", market_params)
-
-        last_prices = {
-            item["symbol"]: safe_float(item["price"])
-            for item in prices
-            if "symbol" in item and "price" in item
-        }
-        open_prices = {
-            item["symbol"]: safe_float(item["openPrice"])
-            for item in ticker_24h
-            if "symbol" in item and "openPrice" in item
-        }
-
-        positions = []
-        total_value = 0.0
-        total_open_value = 0.0
-
-        for asset_item in assets:
-            asset_code = asset_item["asset"]
-            quantity = asset_item["quantity"]
-            last_usdt, open_usdt = resolve_binance_asset_prices(asset_code, last_prices, open_prices)
-
-            if last_usdt is None:
-                positions.append({
-                    "symbol": asset_code,
-                    "name": asset_code,
-                    "amount": f"{quantity:.8f}".rstrip("0").rstrip("."),
-                    "value": 0.0,
-                    "today_pnl": 0.0,
-                    "today_pnl_pct": 0.0,
-                    "pricing_status": "unpriced",
-                })
-                continue
-
-            current_value = quantity * last_usdt
-            open_value = quantity * open_usdt
-            pnl_value = current_value - open_value
-            pnl_pct = (pnl_value / open_value * 100) if open_value else 0.0
-
-            positions.append({
-                "symbol": asset_code,
-                "name": asset_code,
-                "amount": f"{quantity:.8f}".rstrip("0").rstrip("."),
-                "value": current_value,
-                "today_pnl": pnl_value,
-                "today_pnl_pct": pnl_pct,
-                "pricing_status": "ok",
-            })
-
-            total_value += current_value
-            total_open_value += open_value
-
-        positions.sort(key=lambda item: item["value"], reverse=True)
-
-        total_pnl = total_value - total_open_value
-        total_pnl_pct = (total_pnl / total_open_value * 100) if total_open_value else 0.0
-
-        return {
-            "positions": positions,
-            "total_now": total_value,
-            "today_pnl": total_pnl,
-            "today_pnl_pct": total_pnl_pct,
-            "source": "Binance API",
-        }, None
-    except Exception as exc:
-        error_message = str(exc)
-        if "HTTP Error 451" in error_message:
-            error_message = (
-                "HTTP 451: Binance API este blocat din reteaua sau regiunea curenta. "
-                "Soldurile crypto raman pe fallback manual."
-            )
-        return None, error_message
 
 
 def get_live_ecb_fx():
@@ -707,6 +525,88 @@ def compound_daily_balance_with_tax(start_balance: float, annual_rate: float, ta
     }
 
 
+def get_public_crypto_price_pair(symbol: str):
+    if symbol in CRYPTO_STABLE_ASSETS:
+        return 1.0, 1.0
+
+    yahoo_symbol = CRYPTO_PUBLIC_SYMBOLS.get(symbol)
+    if not yahoo_symbol:
+        return None, None
+
+    try:
+        history = yf.Ticker(yahoo_symbol).history(period="5d", interval="1d", auto_adjust=False)
+        closes = history["Close"].dropna().tolist()
+        if not closes:
+            return None, None
+
+        last_price = float(closes[-1])
+        prev_close = float(closes[-2]) if len(closes) > 1 else last_price
+        return last_price, prev_close
+    except Exception:
+        return None, None
+
+
+def get_public_crypto_snapshot(manual_positions):
+    positions = []
+    total_value = 0.0
+    total_prev_value = 0.0
+    manual_priced_symbols = []
+
+    for raw in manual_positions:
+        symbol = raw["symbol"]
+        quantity = safe_float(raw["amount"])
+        current_price, prev_close = get_public_crypto_price_pair(symbol)
+
+        if current_price is None:
+            current_value = safe_float(raw.get("value"))
+            prev_value = current_value
+            pnl_value = 0.0
+            pnl_pct = 0.0
+            pricing_status = "manual"
+            manual_priced_symbols.append(symbol)
+        else:
+            current_value = quantity * current_price
+            prev_value = quantity * prev_close
+            pnl_value = current_value - prev_value
+            pnl_pct = (pnl_value / prev_value * 100) if prev_value else 0.0
+            pricing_status = "ok"
+
+        positions.append({
+            "symbol": symbol,
+            "name": raw.get("name", symbol),
+            "amount": raw["amount"],
+            "value": current_value,
+            "today_pnl": pnl_value,
+            "today_pnl_pct": pnl_pct,
+            "pricing_status": pricing_status,
+        })
+
+        total_value += current_value
+        total_prev_value += prev_value
+
+    positions.sort(key=lambda item: item["value"], reverse=True)
+
+    total_pnl = total_value - total_prev_value
+    total_pnl_pct = (total_pnl / total_prev_value * 100) if total_prev_value else 0.0
+
+    price_warning = None
+    if manual_priced_symbols:
+        price_warning = (
+            "Nu există cotație publică pentru: "
+            + ", ".join(manual_priced_symbols)
+            + ". Pentru acestea s-a păstrat valoarea manuală."
+        )
+
+    return {
+        "positions": positions,
+        "total_now": total_value,
+        "today_pnl": total_pnl,
+        "today_pnl_pct": total_pnl_pct,
+        "source": "Yahoo Finance public prices",
+        "price_warning": price_warning,
+    }
+
+
 fx = get_live_ecb_fx()
 eurusd_rate = fx["eurusd"]
 usdron_rate = fx["usdron"]
@@ -716,10 +616,7 @@ ALEX_ASSETS = [
     {
         "name": "🪙 Crypto Spot",
         "display_html": "🪙 Crypto Spot",
-        "mode": "crypto_binance_fallback",
-        "total_now": 111.90,
-        "today_pnl": -1.57,
-        "today_pnl_pct": -1.38,
+        "mode": "crypto_public_prices",
         "positions": [
             {"symbol": "BNB", "name": "Build and Build", "amount": "0.0767989", "value": 48.53},
             {"symbol": "BTC", "name": "Bitcoin", "amount": "0.00054", "value": 39.61},
@@ -730,7 +627,7 @@ ALEX_ASSETS = [
             {"symbol": "EDG", "name": "Edgeware", "amount": "218.69791733", "value": 0.00},
             {"symbol": "ETHW", "name": "Ethereum PoW", "amount": "0.00008495", "value": 0.00},
         ],
-        "note": "Dacă există cheile Binance în Streamlit secrets, crypto devine live din cont. Altfel rămâne fallback pe valorile manuale de mai jos.",
+        "note": "Crypto folosește cantitățile tale manuale și prețuri publice live. Dacă un simbol nu are cotație publică disponibilă, rămâne pe ultima valoare manuală.",
     },
     {
         "name": "RO BVB Principal",
@@ -829,45 +726,25 @@ if st.sidebar.button("Refresh Manual", use_container_width=True):
 def process_asset(asset, best_position, worst_position):
     display_html = asset.get("display_html", asset["name"])
 
-    if asset["mode"] in {"crypto_manual", "crypto_binance_fallback"}:
-        binance_snapshot, binance_error = get_binance_crypto_snapshot()
+    if asset["mode"] == "crypto_public_prices":
+        public_snapshot = get_public_crypto_snapshot(asset["positions"])
+        current_usd = public_snapshot["total_now"]
+        basis_usd = current_usd
 
-        if binance_snapshot is not None:
-            current_usd = binance_snapshot["total_now"]
-            basis_usd = current_usd
-
-            return {
-                "name": asset["name"],
-                "display_html": display_html,
-                "mode": "crypto_binance",
-                "current_usd": current_usd,
-                "current_eur": current_usd / eurusd_rate,
-                "current_ron": current_usd * usdron_rate,
-                "basis_usd": basis_usd,
-                "today_pnl": binance_snapshot["today_pnl"],
-                "today_pnl_pct": binance_snapshot["today_pnl_pct"],
-                "positions": binance_snapshot["positions"],
-                "note": asset["note"],
-                "source": binance_snapshot["source"],
-                "api_error": None,
-            }, best_position, worst_position
-
-        current_usd = asset["total_now"]
-        basis_usd = asset["total_now"]
         return {
             "name": asset["name"],
             "display_html": display_html,
-            "mode": "crypto_manual",
+            "mode": "crypto_public",
             "current_usd": current_usd,
             "current_eur": current_usd / eurusd_rate,
             "current_ron": current_usd * usdron_rate,
             "basis_usd": basis_usd,
-            "today_pnl": asset["today_pnl"],
-            "today_pnl_pct": asset["today_pnl_pct"],
-            "positions": asset["positions"],
+            "today_pnl": public_snapshot["today_pnl"],
+            "today_pnl_pct": public_snapshot["today_pnl_pct"],
+            "positions": public_snapshot["positions"],
             "note": asset["note"],
-            "source": "Manual fallback",
-            "api_error": binance_error,
+            "source": public_snapshot["source"],
+            "price_warning": public_snapshot["price_warning"],
         }, best_position, worst_position
 
     if asset["mode"] == "bvb_manual":
@@ -1173,6 +1050,7 @@ def render_crypto_detail(result):
         """,
         unsafe_allow_html=True,
     )
+
     st.markdown(
         f"""
         <div class="notice-box" style="margin-bottom:12px;">
@@ -1183,12 +1061,12 @@ def render_crypto_detail(result):
         unsafe_allow_html=True,
     )
 
-    if result.get("api_error") and result.get("source") == "Manual fallback":
+    if result.get("price_warning"):
         st.markdown(
             f"""
             <div class="warning-box">
-                <b>Binance API indisponibil.</b><br>
-                {result['api_error']}
+                <b>Atenție la cotații.</b><br>
+                {result['price_warning']}
             </div>
             """,
             unsafe_allow_html=True,
@@ -1199,8 +1077,8 @@ def render_crypto_detail(result):
         for j, coin in enumerate(result["positions"][i:i + 2]):
             with cols[j]:
                 pricing_text = ""
-                if coin.get("pricing_status") == "unpriced":
-                    pricing_text = "Fara pereche de pret detectata in Binance"
+                if coin.get("pricing_status") == "manual":
+                    pricing_text = "Valoare manuală"
                 elif "today_pnl_pct" in coin:
                     pricing_text = f"{coin['today_pnl_pct']:+.2f}% today"
 
@@ -1498,7 +1376,7 @@ with left:
         st.markdown('<div class="section-subtitle">Crypto, BVB, PIE-uri și economiile lui Alex</div>', unsafe_allow_html=True)
 
         for result in alex_group["results"]:
-            if result["mode"] in {"crypto_manual", "crypto_binance"}:
+            if result["mode"] == "crypto_public":
                 row_pct = result["today_pnl_pct"]
                 badge = f"Today {row_pct:+.2f}%"
                 sub_line = f"Spot value: ${result['current_usd']:,.2f} | {result.get('source', 'Manual')}"
@@ -1531,7 +1409,7 @@ with left:
         for result in alex_group["results"]:
             st.markdown(f'<div class="subasset-title">{result["display_html"]}</div>', unsafe_allow_html=True)
 
-            if result["mode"] in {"crypto_manual", "crypto_binance"}:
+            if result["mode"] == "crypto_public":
                 render_crypto_detail(result)
             elif result["mode"] == "bvb_manual":
                 render_bvb_detail(result)
